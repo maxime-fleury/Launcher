@@ -1,0 +1,19 @@
+{
+  "name": "bun-project-launcher",
+  "version": "1.0.0",
+  "description": "Scan drives for bun projects and launch them with one click (auto-kills their port via kpport)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "scan": "node scripts/scan-cli.js"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  }
+}

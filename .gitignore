@@ -1,0 +1,11 @@
+# dependencies
+node_modules/
+
+# machine-generated scan cache (rebuilt on launch)
+cache.json
+
+# local tooling state
+.freebuff/
+
+# logs
+*.log

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; img-src 'self' file: data:" />
+  <title>Bun Launcher</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">🟤</span>
+      <h1>Bun Launcher</h1>
+      <span id="roots" class="roots" title="Scan roots (edit config.json)"></span>
+    </div>
+    <div class="actions">
+      <button id="btn-newproject" class="btn" title="Create a new bun project">＋ New Project</button>
+      <span id="runningpill" class="pill hidden"><span class="pdot"></span><span id="runningcount">0</span> running</span>
+      <select id="sort" class="select" title="Sort projects">
+        <option value="custom" selected>My order (drag to reorder)</option>
+        <option value="running">Running first</option>
+        <option value="name">By name</option>
+        <option value="port">By port</option>
+      </select>
+      <input id="filter" type="search" placeholder="Search name, path, port…" autocomplete="off" />
+      <button id="btn-stopall" class="btn ghost danger hidden">■ Stop all</button>
+      <button id="btn-rescan" class="btn">⟳ Rescan</button>
+      <button id="btn-config" class="btn ghost">⚙ Config</button>
+    </div>
+  </header>
+
+  <div id="progress" class="progress hidden"><div class="bar"></div></div>
+
+  <div id="statusbar" class="statusbar">
+    <span id="statusmsg" class="statusmsg">Ready</span>
+    <span class="portkill" title="Kill whatever is using a port (kpport)">
+      <span class="portkill-ico">⚔</span>
+      <input id="portkill-input" type="number" min="1" max="65535" placeholder="port" autocomplete="off" />
+      <button id="portkill-btn" class="btn tiny ghost">Kill</button>
+    </span>
+  </div>
+
+  <main>
+    <ul id="list" class="list"></ul>
+    <div id="empty" class="empty hidden">
+      <div class="empty-ico">🔍</div>
+      <div>No bun projects found.</div>
+      <div class="muted">Check the scan roots in <code>config.json</code> (⚙ Config).</div>
+    </div>
+  </main>
+
+  <section id="logpanel" class="logpanel hidden">
+    <div class="loghead">
+      <div id="logtabs" class="logtabs"></div>
+      <span class="logactions">
+        <button id="btn-follow" class="btn tiny ghost" title="Auto-scroll to new output">⤓ follow</button>
+        <button id="btn-save-log" class="btn tiny ghost" title="Save log to a file">💾 Save</button>
+        <button id="btn-clear-log" class="btn tiny ghost">Clear</button>
+        <button id="btn-close-log" class="btn tiny ghost" title="Hide log panel (tabs are kept)">✕</button>
+      </span>
+    </div>
+    <pre id="logbody" class="logbody"></pre>
+  </section>
+
+  <div id="newproj-overlay" class="overlay hidden">
+    <div class="modal">
+      <h2 class="modal-title">＋ New Project</h2>
+      <label class="fld-label" for="newproj-name">Project name</label>
+      <input id="newproj-name" type="text" placeholder="my-cool-project" autocomplete="off" spellcheck="false" />
+      <div class="fld-label">Folder</div>
+      <div id="newproj-folders" class="folders"></div>
+      <div id="newproj-path" class="newproj-path"></div>
+      <div id="newproj-error" class="newproj-error hidden"></div>
+      <div class="modal-actions">
+        <button id="newproj-cancel" class="btn ghost">Cancel</button>
+        <button id="newproj-create" class="btn">Create &amp; Start</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts"></div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

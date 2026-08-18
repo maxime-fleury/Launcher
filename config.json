@@ -1,0 +1,42 @@
+{
+  "scanRoots": [
+    "D:\\"
+  ],
+  "kpportPath": "C:\\tools\\kpport.cmd",
+  "bunPath": "C:\\Users\\Max\\.bun\\bin\\bun",
+  "ignoredDirs": [
+    "node_modules",
+    ".git",
+    ".hg",
+    ".svn",
+    "venv",
+    ".venv",
+    "env",
+    "dist",
+    "build",
+    "out",
+    "target",
+    "__pycache__",
+    ".cache",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    ".idea",
+    ".vscode",
+    "coverage",
+    ".parcel-cache",
+    ".svelte-kit",
+    "bin",
+    "obj",
+    "$RECYCLE.BIN",
+    "System Volume Information"
+  ],
+  "createFolders": ["AI", "Dev", "gen"],
+  "portOverrides": {},
+  "customNames": {},
+  "customOrder": [
+    "D:\\Dev\\YouFind",
+    "D:\\AI\\AltX",
+    "D:\\AI\\CompanyFinder"
+  ]
+}
