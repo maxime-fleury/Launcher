@@ -44,6 +44,37 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// URLs in log output → clickable links (text is already HTML-escaped)
+const LOG_URL_RE = /https?:\/\/[^\s<>"']+/g;
+
+function linkify(text) {
+  return text.replace(LOG_URL_RE, (url) => {
+    let clean = url;
+    while (/[.,;:!?)\]}]+$/.test(clean)) clean = clean.slice(0, -1);
+    return `<a class="loglink" href="${clean}">${clean}</a>`;
+  });
+}
+
+// Terminal escape sequences (colors, cursor moves) — strip so logs stay readable
+const ANSI_RE = /\x1b\[[0-9;?]*[ -\/]*[@-~]/g;
+
+function stripAnsi(s) {
+  return String(s).replace(ANSI_RE, "");
+}
+
+// Subtle line styling: launcher meta lines, echoed commands, process exit notices
+function decorate(text) {
+  return text
+    .replace(/^(\[\d{2}:\d{2}:\d{2}\] \[launcher\].*)$/gm, '<span class="log-meta">$1</span>')
+    .replace(/^(\[process exited\].*)$/gm, '<span class="log-exit">$1</span>')
+    .replace(/^\$ .*$/gm, '<span class="log-cmd">$&</span>');
+}
+
+// Full pipeline: raw chunk → escaped text with links, ANSI stripped, decorated
+function renderLogText(text) {
+  return decorate(linkify(esc(stripAnsi(text))));
+}
+
 function fmtDuration(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(s / 3600);
@@ -603,7 +634,7 @@ async function loadLogs(projectPath) {
   logBody.innerHTML = "";
   const text = await bridge.getLog(projectPath);
   if (state.activeTab !== projectPath) return;
-  logBody.textContent = text;
+  logBody.innerHTML = renderLogText(text);
   appendSeparator(`attached to ${tabName(projectPath)} at ${clock()}`);
   if (state.logFollow) logBody.scrollTop = logBody.scrollHeight;
 }
@@ -620,7 +651,7 @@ function appendLog(projectPath, chunk) {
     const nearBottom = logBody.scrollHeight - logBody.scrollTop - logBody.clientHeight < 60;
     const pre = document.createElement("pre");
     pre.style.cssText = "display:inline;font:inherit;";
-    pre.textContent = chunk;
+    pre.innerHTML = renderLogText(chunk);
     logBody.appendChild(pre);
     if (state.logFollow && nearBottom) logBody.scrollTop = logBody.scrollHeight;
   } else if (state.tabs.has(projectPath)) {
@@ -631,6 +662,15 @@ function appendLog(projectPath, chunk) {
     }
   }
 }
+
+// Clicking a log link opens the URL in the default browser instead of navigating the app away
+logBody.addEventListener("click", (e) => {
+  const a = e.target.closest("a.loglink");
+  if (!a) return;
+  e.preventDefault();
+  e.stopPropagation();
+  bridge.openUrl(a.href);
+});
 
 function saveLog() {
   if (!state.activeTab) return;
