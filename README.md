@@ -4,6 +4,14 @@ Desktop app (Electron) that scans your drives for **bun projects** and starts th
 Before starting a project it automatically runs your `kpport` tool to kill whatever is using the
 project's port, so you never get "port already in use".
 
+## Why I built it
+
+I had built so many apps that I needed a launcher to keep track of them. Rather than opening a terminal for every project and remembering its folder and port, I wanted one place to discover, start, stop and monitor my local apps.
+
+## Screenshot
+
+![Bun Launcher showing local projects, running status, start and stop controls, and integrated terminal logs](docs/images/bun-launcher.png)
+
 ## Run
 
 Fastest ways to open it (no terminal needed):
