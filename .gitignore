@@ -1,5 +1,6 @@
 # dependencies
 node_modules/
+target/
 
 # machine-generated scan cache (rebuilt on launch)
 cache.json
@@ -9,3 +10,6 @@ cache.json
 
 # logs
 *.log
+
+# generated Tauri schemas
+gen/

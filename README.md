@@ -1,22 +1,27 @@
-# 🟤 Bun Launcher
+# 🟤 Rust Launcher
 
-Desktop app (Electron) that scans your drives for **bun projects** and starts them with one click.
-Before starting a project it automatically runs your `kpport` tool to kill whatever is using the
-project's port, so you never get "port already in use".
+Windows desktop app (Rust + Tauri, using the system WebView2) that scans your drives for **bun projects** and starts them with one click.
+Before starting a project, it checks the configured port and asks for confirmation before running `kpport` on an occupied port.
 
 ## Run
 
-Fastest ways to open it (no terminal needed):
+Install the Rust MSVC toolchain and Microsoft Edge WebView2 Runtime, then build once from this folder:
 
-- **Desktop shortcut** — double-click **Bun Launcher** on your Desktop.
-- **`Bun Launcher.vbs`** in this folder — double-click, no console flash.
+```bash
+cargo build --release --bin rust-launcher
+```
+
+After building, open it using:
+
+- **Desktop shortcut** — recreate it using the command below, then double-click **Rust Launcher** on your Desktop.
+- **`Rust Launcher.vbs`** in this folder — double-click, no console flash.
 - **`launcher.cmd`** in this folder.
 
 From a terminal you can also use:
 
 ```bash
 cd D:\Launcher
-npm start
+cargo run --release --bin rust-launcher
 ```
 
 If you move the folder, recreate the desktop shortcut with:
@@ -30,7 +35,7 @@ together with `bun.lock` / `bun.lockb` (or `packageManager: "bun@…"`).
 
 ### Controls
 
-- **Click a project** → kills its port (kpport) then runs `bun run dev` (or `start`) in that folder.
+- **Click a project** → checks its port, asks before terminating any listeners, then runs `bun run dev` (or `start`) in that folder.
 - **Click again / ■ Stop** → kills the process tree. **⟳** restarts a running project.
 - **🔗 :PORT** badge → opens `http://localhost:PORT` in your browser (lights up green while running).
 - **▸** chevron → expand details (folder, script, framework, port, description).
@@ -39,13 +44,14 @@ together with `bun.lock` / `bun.lockb` (or `packageManager: "bun@…"`).
   without stopping the process; tabs survive stops so you can read the final output).
 - Tab toolbar: auto-scroll follow toggle, **💾 Save** to file, Clear, hide panel.
 - **⚔ Kill by port** — a port input in the bottom status bar: type a port, hit Kill, and it runs
-  `kpport` on it. It first shows what's using the port (PID + process name), then kills it,
+  `kpport` on it after confirmation. It shows what's using the port (PID + process name),
   with a toast like “Port 3001: killed PID 22364 (bun.exe)”.
 - **Port status** — expanding a project with a detected port shows whether that port is currently
   **in use** (by whom) or **free**.
 - **✎ Rename** — hover a project and click the ✎ to give it a custom display name
   (Enter saves, Esc cancels, empty reverts to the package name). Names follow the project
   everywhere, including terminal tabs.
+- **Quick filters** — show all projects, running projects, favorites (★), or projects in a selected folder. Favorites are saved in `config.json` independently of the custom order.
 - **Reorder that survives rescans** — **My order** is the default view. Click **📌** on any
   project to pin it to the top, or drag rows (⋮⋮ handle) to arrange them freely.
   The order is saved in `config.json` and reapplies after every rescan/restart.
@@ -66,7 +72,7 @@ together with `bun.lock` / `bun.lockb` (or `packageManager: "bun@…"`).
 
 ### Scan cache
 
-The last scan is stored in `cache.json`. On launch the app shows the cached list **instantly**, scans
+The last scan is stored in `cache.json`. On launch the app shows the cached list, scans
 the drives in the background, and then updates the list in place — new projects are added with a
 toast, removed ones disappear. A manual **⟳ Rescan** always does a fresh scan.
 
@@ -79,7 +85,8 @@ toast, removed ones disappear. A manual **⟳ Rescan** always does a fresh scan.
 | `bunPath` | Fallback bun executable if `bun` isn't on PATH. |
 | `ignoredDirs` | Directory names never entered (node_modules, .git, venv, …). |
 | `createFolders` | Folder names offered by **＋ New Project** (default `["AI", "Dev", "gen"]`), created under the first scan root. |
-| `portOverrides` | Project path → port, for projects the auto-detection misses: |
+| `portOverrides` | Project path → port, for projects the auto-detection misses. |
+| `favorites` | Project paths marked as favorites. |
 
 ```json
 "portOverrides": {
@@ -100,15 +107,13 @@ The port is detected automatically, in layers:
    entry's `env`/`config`/`server`/`app`/`main` imports (bounded) to find it
    (e.g. `config.server.port`, `require('./search/server')`, `env.ts`).
 4. **Framework defaults** — vite/svelte → 5173, next/nuxt → 3000.
-5. **Gated guess** — as a last resort, a 4-5 digit number in a port-related context
-   (`return 3000;` in a port function, “port … 3000” in comments), guarded against
-   false words (report, export, transport, …).
+5. **Gated guess** — as a last resort, a number in a file that mentions a port.
 
 Anything it still can't find goes in `portOverrides`.
 
 ## CLI scan
 
 ```bash
-npm run scan            # uses config.json roots
-node scripts/scan-cli.js "D:\AI" "D:\Dev"   # custom roots
+cargo run --release --bin bun-scan                    # uses config.json roots
+cargo run --release --bin bun-scan -- "D:\AI" "D:\Dev"  # custom roots
 ```

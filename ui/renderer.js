@@ -3,6 +3,9 @@ const bridge = window.api;
 const state = {
   projects: new Map(), // path -> project
   filter: "",
+  quickFilter: "all",
+  folderFilter: "",
+  favorites: new Set(),
   sort: "custom",
   tabs: new Map(), // path -> { name, hasNew }
   activeTab: null, // path of the tab whose logs are shown
@@ -114,16 +117,11 @@ function toast(msg, type = "info") {
 function visibleProjects() {
   const q = state.filter.trim().toLowerCase();
   const list = [...state.projects.values()];
-  const filtered = q
-    ? list.filter(
-        (p) =>
-          p.name.toLowerCase().includes(q) ||
-          p.path.toLowerCase().includes(q) ||
-          (p.framework || "").toLowerCase().includes(q) ||
-          (p.port ? String(p.port).includes(q) : false) ||
-          p.script.toLowerCase().includes(q)
-      )
-    : list;
+  const filtered = list.filter((p) => {
+    const matchesText = !q || displayName(p.path).toLowerCase().includes(q) || p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q) || (p.framework || "").toLowerCase().includes(q) || (p.port && String(p.port).includes(q)) || p.script.toLowerCase().includes(q);
+    const matchesQuick = state.quickFilter === "all" || (state.quickFilter === "running" && (p.status === "running" || p.status === "starting")) || (state.quickFilter === "favorites" && state.favorites.has(p.path));
+    return matchesText && matchesQuick && (!state.folderFilter || projectFolder(p.path) === state.folderFilter);
+  });
   const rank = (p) => (p.status === "running" ? 0 : p.status === "starting" ? 1 : p.status === "error" ? 2 : 3);
   const byName = (a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase());
   const byPort = (a, b) => (a.port ?? 1e9) - (b.port ?? 1e9) || byName(a, b);
@@ -140,6 +138,27 @@ function visibleProjects() {
   return [...filtered].sort((a, b) => rank(a) - rank(b) || byName(a, b));
 }
 
+function projectFolder(path) {
+  const normalized = path.replace(/\\/g, "/").toLowerCase();
+  const roots = [...state.scanRoots].sort((a, b) => b.length - a.length);
+  for (const root of roots) {
+    const prefix = root.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase() + "/";
+    if (normalized.startsWith(prefix)) {
+      const parts = path.replace(/\\/g, "/").slice(prefix.length).split("/");
+      return parts.length > 1 ? parts[0] : "";
+    }
+  }
+  return "";
+}
+
+function updateFolderFilter() {
+  const select = $("folder-filter");
+  const folders = [...new Set([...state.projects.keys()].map(projectFolder).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  select.replaceChildren(new Option("All folders", ""), ...folders.map((folder) => new Option(folder, folder)));
+  if (!folders.includes(state.folderFilter)) state.folderFilter = "";
+  select.value = state.folderFilter;
+}
+
 function makeBadge(cls, text, title = "") {
   const b = document.createElement("span");
   b.className = "badge " + cls;
@@ -153,6 +172,8 @@ function render() {
   listEl.innerHTML = "";
   rowEls.clear();
   emptyEl.classList.toggle("hidden", items.length > 0);
+  $("empty-message").textContent = state.projects.size ? "No projects match these filters." : "No bun projects found.";
+  $("empty-hint").textContent = state.projects.size ? "Try another filter or search." : "Check the scan roots in config.json (⚙ Config).";
 
   items.forEach((p, i) => {
     const li = document.createElement("li");
@@ -279,8 +300,22 @@ function render() {
     li.appendChild(dot);
     li.appendChild(info);
 
+    const favoriteBtn = document.createElement("button");
+    const isFavorite = state.favorites.has(p.path);
+    favoriteBtn.className = "btn ghost tiny rowbtn secondary-action favorite-btn" + (isFavorite ? " is-favorite" : "");
+    favoriteBtn.textContent = isFavorite ? "★" : "☆";
+    favoriteBtn.title = isFavorite ? "Remove from favorites" : "Add to favorites";
+    favoriteBtn.setAttribute("aria-label", favoriteBtn.title);
+    favoriteBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const next = new Set(state.favorites);
+      if (next.has(p.path)) next.delete(p.path); else next.add(p.path);
+      try { await bridge.updateConfig({ favorites: [...next] }); state.favorites = next; render(); }
+      catch (error) { toast(`Could not save favorites: ${esc(error)}`, "error"); }
+    });
+
     const pinBtn = document.createElement("button");
-    pinBtn.className = "btn ghost tiny rowbtn pinbtn";
+    pinBtn.className = "btn ghost tiny rowbtn pinbtn secondary-action";
     pinBtn.textContent = "📌";
     pinBtn.title = "Pin to top (stays after rescans)";
     pinBtn.addEventListener("click", (e) => {
@@ -289,7 +324,7 @@ function render() {
     });
 
     const folderBtn = document.createElement("button");
-    folderBtn.className = "btn ghost tiny rowbtn";
+    folderBtn.className = "btn ghost tiny rowbtn secondary-action";
     folderBtn.textContent = "📁";
     folderBtn.title = "Open project folder";
     folderBtn.addEventListener("click", (e) => {
@@ -298,7 +333,7 @@ function render() {
     });
 
     const logsBtn = document.createElement("button");
-    logsBtn.className = "btn ghost tiny rowbtn";
+    logsBtn.className = "btn ghost tiny rowbtn secondary-action";
     logsBtn.textContent = "⎇";
     logsBtn.title = "Show live logs";
     logsBtn.addEventListener("click", (e) => {
@@ -319,13 +354,14 @@ function render() {
     startBtn.className = "btn tiny rowbtn start";
     startBtn.textContent = isRunning ? "■ Stop" : isStarting ? "…" : "▶ Start";
     startBtn.disabled = isStarting;
-    startBtn.title = isRunning ? "Stop process" : isStarting ? "Starting…" : "Start (kills port first)";
+    startBtn.title = isRunning ? "Stop process" : isStarting ? "Starting…" : "Start (confirms if port is in use)";
     if (!isRunning && !isStarting) startBtn.classList.add("primary");
     startBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       toggle(p.path);
     });
 
+    li.appendChild(favoriteBtn);
     li.appendChild(pinBtn);
     li.appendChild(folderBtn);
     li.appendChild(logsBtn);
@@ -385,7 +421,7 @@ function patchRow(path) {
   els.startBtn.textContent = isRunning ? "■ Stop" : isStarting ? "…" : "▶ Start";
   els.startBtn.disabled = isStarting;
   els.startBtn.classList.toggle("primary", !isRunning && !isStarting);
-  els.startBtn.title = isRunning ? "Stop process" : isStarting ? "Starting…" : "Start (kills port first)";
+  els.startBtn.title = isRunning ? "Stop process" : isStarting ? "Starting…" : "Start (confirms if port is in use)";
 
   els.restartBtn.classList.toggle("hidden", !isRunning);
 
@@ -427,7 +463,9 @@ async function fillPortStatuses() {
   const lines = document.querySelectorAll(".portline[data-port]");
   for (const line of lines) {
     const port = parseInt(line.dataset.port, 10);
-    const res = await bridge.portStatus(port);
+    let res;
+    try { res = await bridge.portStatus(port); }
+    catch { if (line.isConnected) line.textContent = "unable to check"; continue; }
     if (!line.isConnected) return; // row was re-rendered meanwhile
     if (res.inUse) {
       const names = res.users.map((u) => `PID ${u.pid}${u.name ? ` (${u.name})` : ""}`).join(", ");
@@ -440,6 +478,48 @@ async function fillPortStatuses() {
   }
 }
 
+function confirmPortConflict(port, users) {
+  return new Promise((resolve) => {
+    const overlay = $("port-conflict-overlay");
+    $("port-conflict-message").textContent = `Port ${port} is currently used by:`;
+    const list = $("port-conflict-users");
+    list.replaceChildren(...users.map((user) => {
+      const item = document.createElement("li");
+      item.textContent = `PID ${user.pid}${user.name ? ` (${user.name})` : ""}`;
+      return item;
+    }));
+    overlay.classList.remove("hidden");
+    const confirm = $("port-conflict-confirm");
+    const cancel = $("port-conflict-cancel");
+    const finish = (accepted) => {
+      overlay.classList.add("hidden");
+      confirm.removeEventListener("click", accept);
+      cancel.removeEventListener("click", reject);
+      overlay.removeEventListener("click", outside);
+      document.removeEventListener("keydown", escape);
+      resolve(accepted);
+    };
+    const accept = () => finish(true);
+    const reject = () => finish(false);
+    const outside = (event) => { if (event.target === overlay) reject(); };
+    const escape = (event) => { if (event.key === "Escape") reject(); };
+    confirm.addEventListener("click", accept);
+    cancel.addEventListener("click", reject);
+    overlay.addEventListener("click", outside);
+    document.addEventListener("keydown", escape);
+    cancel.focus();
+  });
+}
+
+// Re-check on the backend each time; if the listener changed, ask again.
+async function resolvePortConflict(result, retry) {
+  while (result.conflict) {
+    if (!await confirmPortConflict(result.port, result.users)) return null;
+    result = await retry(result.users.map((user) => user.pid));
+  }
+  return result;
+}
+
 async function toggle(projectPath) {
   const p = state.projects.get(projectPath);
   if (!p) return;
@@ -448,8 +528,10 @@ async function toggle(projectPath) {
   } else {
     openTab(projectPath);
     toast(`Starting <b>${esc(displayName(projectPath))}</b>…`, "info");
-    const res = await bridge.startProject(projectPath);
-    if (!res.ok) toast(`Failed to start: ${res.message}`, "error");
+    try {
+      const res = await resolvePortConflict(await bridge.startProject(projectPath), (pids) => bridge.startProject(projectPath, pids));
+      if (res && !res.ok) toast(`Failed to start: ${esc(res.message)}`, "error");
+    } catch (error) { toast(`Failed to start: ${esc(error)}`, "error"); }
   }
 }
 
@@ -458,8 +540,10 @@ async function doRestart(projectPath) {
   if (!p) return;
   openTab(projectPath);
   toast(`Restarting <b>${esc(displayName(projectPath))}</b>…`, "info");
-  const res = await bridge.restartProject(projectPath);
-  if (!res.ok) toast(`Restart failed: ${res.message}`, "error");
+  try {
+    const res = await resolvePortConflict(await bridge.restartProject(projectPath), (pids) => bridge.startProject(projectPath, pids));
+    if (res && !res.ok) toast(`Restart failed: ${esc(res.message)}`, "error");
+  } catch (error) { toast(`Restart failed: ${esc(error)}`, "error"); }
 }
 
 // ---------- rename ----------
@@ -706,12 +790,35 @@ $("btn-follow").addEventListener("click", (e) => {
 });
 
 // ---------- header controls ----------
-function rescan() {
+let scanAgain = false;
+
+async function startScan(useCache) {
+  if (state.scanning) {
+    // Coalesce repeated requests, but still refresh after a project is created mid-scan.
+    scanAgain = true;
+    return;
+  }
   state.scanning = true;
   state.scanStart = Date.now();
   progressEl.classList.remove("hidden");
   setStatus("Scanning…");
-  bridge.scan({ useCache: false });
+  try {
+    await bridge.scan({ useCache });
+  } catch (error) {
+    setStatus("Scan failed");
+    toast(`Scan failed: ${esc(error)}`, "error");
+  } finally {
+    state.scanning = false;
+    progressEl.classList.add("hidden");
+    if (scanAgain) {
+      scanAgain = false;
+      startScan(false);
+    }
+  }
+}
+
+function rescan() {
+  startScan(false);
 }
 
 $("btn-rescan").addEventListener("click", rescan);
@@ -821,9 +928,12 @@ async function killByPort() {
     input.focus();
     return;
   }
-  const res = await bridge.killPort(port);
+  let res;
+  try { res = await resolvePortConflict(await bridge.killPort(port), (pids) => bridge.killPort(port, pids)); }
+  catch (error) { toast(`Could not check port: ${esc(error)}`, "error"); return; }
+  if (!res) return;
   if (!res.ok) {
-    toast(res.message, "error");
+    toast(esc(res.message), "error");
     return;
   }
   if (res.users.length) {
@@ -845,6 +955,19 @@ $("btn-stopall").addEventListener("click", async () => {
   const res = await bridge.stopAll();
   toast(`Stopped ${res.stopped} project(s)`, "info");
 });
+
+document.querySelectorAll("[data-filter]").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.quickFilter = button.dataset.filter;
+    document.querySelectorAll("[data-filter]").forEach((item) => {
+      const active = item === button;
+      item.classList.toggle("active", active);
+      item.setAttribute("aria-pressed", String(active));
+    });
+    render();
+  });
+});
+$("folder-filter").addEventListener("change", (event) => { state.folderFilter = event.target.value; render(); });
 
 filterEl.addEventListener("input", () => {
   state.filter = filterEl.value;
@@ -887,7 +1010,9 @@ function openBootTabs() {
 
 bridge.onScanCached(({ projects, roots, scannedAt }) => {
   populateProjects(projects);
+  state.scanRoots = roots;
   rootsEl.textContent = roots.join("  ·  ");
+  updateFolderFilter();
   const ago = Math.max(1, Math.round((Date.now() - scannedAt) / 1000));
   const when = ago > 90 ? `${Math.round(ago / 60)}m` : `${ago}s`;
   setStatus(`Loaded ${projects.length} projects from cache (${when} old) — scanning for updates…`);
@@ -896,10 +1021,10 @@ bridge.onScanCached(({ projects, roots, scannedAt }) => {
 });
 
 bridge.onScanDone(({ projects, roots }) => {
-  state.scanning = false;
-  progressEl.classList.add("hidden");
   const prev = populateProjects(projects);
+  state.scanRoots = roots;
   rootsEl.textContent = roots.join("  ·  ");
+  updateFolderFilter();
   const secs = ((Date.now() - state.scanStart) / 1000).toFixed(1);
 
   if (state.firstListLoaded) {
@@ -927,7 +1052,7 @@ bridge.onProjectStatus(({ path, status, port, startedAt }) => {
 
   state.runningCount = [...state.projects.values()].filter((x) => x.status === "running" || x.status === "starting").length;
   updateRunningUi();
-  patchRow(path);
+  if (state.quickFilter === "running") render(); else patchRow(path);
 
   if (state.tabs.has(path)) renderTabs();
   if (state.expanded.size && (status === "running" || status === "stopped" || status === "error")) fillPortStatuses();
@@ -953,13 +1078,13 @@ bridge.onProjectLog(({ path, chunk }) => appendLog(path, chunk));
   const cfg = await bridge.getConfig();
   if (cfg) {
     state.customNames = cfg.customNames || {};
+    state.favorites = new Set(Array.isArray(cfg.favorites) ? cfg.favorites : []);
     state.customOrder = cfg.customOrder || [];
     state.createFolders = cfg.createFolders || ["AI", "Dev", "gen"];
     state.scanRoots = cfg.scanRoots || [];
   }
   setStatus("Loading…");
-  state.scanStart = Date.now();
-  bridge.scan({ useCache: true }); // fires scan-cached instantly, then scan-done after the background scan
+  startScan(true); // fires scan-cached instantly, then scan-done after the background scan
   const running = await bridge.getRunning();
   state.bootRunning = running;
   if (state.projects.size) openBootTabs();
