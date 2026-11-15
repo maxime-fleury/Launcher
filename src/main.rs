@@ -2,14 +2,14 @@
 mod scanner;
 use scanner::Project;
 use serde_json::{json, Value};
-use std::{collections::{HashMap, VecDeque}, fs, io::{Read, Write}, net::TcpListener, path::{Component, Path, PathBuf}, process::{Child, Command, Stdio}, sync::{Arc, Mutex}, thread, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{collections::{HashMap, HashSet, VecDeque}, fs, io::{Read, Write}, net::TcpListener, path::{Component, Path, PathBuf}, process::{Child, Command, Stdio}, sync::{Arc, Mutex}, thread, time::{Duration, SystemTime, UNIX_EPOCH}};
 use tauri::{Emitter, Manager};
 
-struct Running { child: Child, project: Project, started_at: u128 }
+struct Running { child: Child, project: Project, started_at: u128, ports: Vec<u16>, status: String }
 struct Data { config: Value, running: HashMap<String, Running>, logs: HashMap<String, String>, log_order: VecDeque<String> }
 struct State { dir: PathBuf, data: Mutex<Data> }
 fn now() -> u128 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() }
-fn defaults() -> Value { json!({"scanRoots":["D:\\"],"kpportPath":"C:\\tools\\kpport.cmd","bunPath":"bun","ignoredDirs":["node_modules",".git",".hg",".svn","venv",".venv","env","dist","build","out","target","__pycache__",".cache",".next",".nuxt",".turbo",".idea",".vscode","coverage",".parcel-cache",".svelte-kit","bin","obj","$RECYCLE.BIN","System Volume Information"],"createFolders":["AI","Dev","gen"],"portOverrides":{},"customNames":{},"customOrder":[]}) }
+fn defaults() -> Value { json!({"scanRoots":["D:\\"],"kpportPath":"","bunPath":"bun","ignoredDirs":["node_modules",".git",".hg",".svn","venv",".venv","env","dist","build","out","target","__pycache__",".cache",".next",".nuxt",".turbo",".idea",".vscode","coverage",".parcel-cache",".svelte-kit","bin","obj","$RECYCLE.BIN","System Volume Information"],"createFolders":["AI","Dev","gen"],"portOverrides":{},"customNames":{},"customOrder":[]}) }
 fn load_config(dir: &Path) -> Value {
     let mut d = defaults();
     if let Ok(Value::Object(raw)) = fs::read_to_string(dir.join("config.json")).map(|s| serde_json::from_str::<Value>(&s).unwrap_or(Value::Null)) { d.as_object_mut().unwrap().extend(raw); }
@@ -39,6 +39,38 @@ fn output(mut c: Command) -> Result<std::process::Output, String> { hide(&mut c)
 fn bun(config: &Value) -> String {
     if output({ let mut c = Command::new("bun"); c.arg("--version"); c }).is_ok_and(|o| o.status.success()) { "bun".into() } else { config["bunPath"].as_str().unwrap_or("bun").into() }
 }
+#[cfg(windows)]
+fn process_tree(root: u32) -> Result<HashSet<u32>, String> {
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE { return Err(std::io::Error::last_os_error().to_string()); }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed(); entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut edges = Vec::new();
+        if Process32FirstW(snapshot, &mut entry) != 0 { loop { edges.push((entry.th32ParentProcessID, entry.th32ProcessID)); if Process32NextW(snapshot, &mut entry) == 0 { break; } } }
+        CloseHandle(snapshot);
+        let mut pids = HashSet::from([root]);
+        loop { let before = pids.len(); for &(parent, child) in &edges { if pids.contains(&parent) { pids.insert(child); } } if before == pids.len() { break; } }
+        Ok(pids)
+    }
+}
+#[cfg(not(windows))]
+fn process_tree(root: u32) -> Result<HashSet<u32>, String> { Ok(HashSet::from([root])) }
+fn listening_ports(text: &str, pids: &HashSet<u32>) -> Vec<u16> {
+    let mut ports: Vec<u16> = text.lines().filter_map(|line| {
+        let a: Vec<_> = line.split_whitespace().collect();
+        if a.len() < 5 || !a[3].eq_ignore_ascii_case("LISTENING") || !a[4].parse::<u32>().ok().is_some_and(|pid| pids.contains(&pid)) { return None; }
+        a[1].rsplit(':').next()?.parse::<u16>().ok().filter(|p| *p > 0)
+    }).collect();
+    ports.sort_unstable(); ports.dedup(); ports
+}
+fn process_ports(pid: u32) -> Result<Vec<u16>, String> {
+    let pids = process_tree(pid)?;
+    let out = output({ let mut c=Command::new("netstat"); c.arg("-ano"); c })?;
+    if !out.status.success() { return Err("Could not check listening ports".into()); }
+    Ok(listening_ports(&String::from_utf8_lossy(&out.stdout), &pids))
+}
 fn port_users(port: u16) -> Result<Vec<Value>, String> {
     let out = output({ let mut c=Command::new("netstat"); c.arg("-ano"); c })?;
     if !out.status.success() { return Err("Could not check port usage with netstat".into()); }
@@ -58,9 +90,14 @@ fn approved_users(users: &[Value], approved: &Value) -> bool {
     expected.sort_unstable(); actual.sort_unstable();
     expected.len() == users.len() && actual.len() == approved.len() && expected == actual
 }
-fn kill_port(config: &Value, port: u16) -> Result<String, String> {
-    let tool = config["kpportPath"].as_str().filter(|s| !s.is_empty()).ok_or("kpportPath is not configured")?;
-    let out = output({ let mut c=Command::new("cmd.exe"); c.args(["/c", tool, &port.to_string()]); c })?;
+fn kill_port(config: &Value, port: u16, users: &[Value]) -> Result<String, String> {
+    let tool = config["kpportPath"].as_str().unwrap_or("").trim();
+    let out = if tool.is_empty() {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("kpport.exe");
+        output({ let mut c=Command::new(exe); c.arg(port.to_string()); for u in users { if let Some(pid)=u["pid"].as_str() { c.arg(pid); } } c })?
+    } else {
+        output({ let mut c=Command::new("cmd.exe"); c.args(["/c", tool, &port.to_string()]); c })?
+    };
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     if !out.status.success() { return Err(format!("kpport failed: {}", text.trim())); }
     Ok(text.trim().into())
@@ -74,20 +111,28 @@ fn start(app: &tauri::AppHandle, state: &Arc<State>, path: &str, approved: &Valu
         if !users.is_empty() {
             if !approved_users(&users, approved) { return json!({"ok":false,"conflict":true,"port":port,"users":users}); }
             log(app,state,path,&format!("[launcher] freeing port {port} (kpport)...\n"));
-            if let Err(e) = kill_port(&config, port) { log(app,state,path,&format!("[launcher] {e}\n")); return json!({"ok":false,"message":e}); }
+            if let Err(e) = kill_port(&config, port, &users) { log(app,state,path,&format!("[launcher] {e}\n")); return json!({"ok":false,"message":e}); }
         }
     }
     emit(app,"project-status",json!({"path":path,"status":"starting","port":project.port}));
     let mut command=Command::new(bun(&config)); command.args(["run", &project.script]).current_dir(path).stdout(Stdio::piped()).stderr(Stdio::piped()); hide(&mut command);
     let mut child=match command.spawn() { Ok(c)=>c, Err(e)=> { log(app,state,path,&format!("[launcher] failed to start: {e}\n")); emit(app,"project-status",json!({"path":path,"status":"error"})); return json!({"ok":false,"message":e.to_string()}) } };
     let stdout=child.stdout.take(); let stderr=child.stderr.take(); let pid=child.id(); let started_at=now();
-    { let mut d=state.data.lock().unwrap(); d.running.insert(path.into(), Running { child, project:project.clone(), started_at }); }
+    { let mut d=state.data.lock().unwrap(); d.running.insert(path.into(), Running { child, project:project.clone(), started_at, ports:Vec::new(), status:"running".into() }); }
     emit(app,"project-status",json!({"path":path,"status":"running","port":project.port,"script":project.script,"startedAt":started_at}));
     for mut stream in [stdout.map(|s| Box::new(s) as Box<dyn Read + Send>), stderr.map(|s| Box::new(s) as Box<dyn Read + Send>)].into_iter().flatten() {
         let app=app.clone(); let state=state.clone(); let path=path.to_string(); thread::spawn(move || { let mut bytes=[0;4096]; while let Ok(n)=stream.read(&mut bytes) { if n==0 { break; } log(&app,&state,&path,&String::from_utf8_lossy(&bytes[..n])); } });
     }
     let app=app.clone(); let state=state.clone(); let path=path.to_string();
-    thread::spawn(move || loop { thread::sleep(Duration::from_millis(250)); let exit = { let mut d=state.data.lock().unwrap(); match d.running.get_mut(&path) { Some(r) if r.child.id()==pid => match r.child.try_wait() { Ok(Some(status)) => { d.running.remove(&path); Some(status.to_string()) }, Ok(None)=>None, Err(e)=> { d.running.remove(&path); Some(e.to_string()) } }, _=>return } }; if let Some(exit)=exit { log(&app,&state,&path,&format!("\n[process exited] {exit}\n")); emit(&app,"project-status",json!({"path":path,"status":"stopped"})); return; } });
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(1));
+        let exit = { let mut d=state.data.lock().unwrap(); match d.running.get_mut(&path) { Some(r) if r.child.id()==pid => match r.child.try_wait() { Ok(Some(status)) => { d.running.remove(&path); Some((status.success(), status.to_string())) }, Ok(None)=>None, Err(e)=> { d.running.remove(&path); Some((false, e.to_string())) } }, _=>return } };
+        if let Some((success, exit))=exit { log(&app,&state,&path,&format!("\n[process exited] {exit}\n")); emit(&app,"project-status",json!({"path":path,"status":if success {"stopped"} else {"error"},"ports":[]})); return; }
+        if let Ok(ports) = process_ports(pid) {
+            let update = { let mut d=state.data.lock().unwrap(); match d.running.get_mut(&path) { Some(r) if r.child.id()==pid => { let status=if ports.is_empty() { "running" } else { "ready" }; if r.ports != ports || r.status != status { r.ports=ports.clone(); r.status=status.into(); Some((r.started_at, status)) } else { None } }, _=>return } };
+            if let Some((started_at, status))=update { emit(&app,"project-status",json!({"path":path,"status":status,"ports":ports,"startedAt":started_at})); }
+        }
+    });
     json!({"ok":true})
 }
 fn stop(app: &tauri::AppHandle, state: &State, path: &str) -> Value {
@@ -97,7 +142,7 @@ fn stop(app: &tauri::AppHandle, state: &State, path: &str) -> Value {
         let _=entry.child.kill(); let _=entry.child.wait(); log(app,state,path,"\n[launcher] stopping...\n"); emit(app,"project-status",json!({"path":path,"status":"stopped"})); json!({"ok":true})
     } else { json!({"ok":false,"message":"not running"}) }
 }
-fn merge(state: &State, projects: &mut [Project]) { let d=state.data.lock().unwrap(); for p in projects { if let Some(port)=d.config["portOverrides"][&p.path].as_u64().and_then(|n| u16::try_from(n).ok()) { p.port=Some(port); p.port_overridden=true; } if let Some(r)=d.running.get(&p.path) { p.status="running".into(); p.started_at=Some(r.started_at); } } }
+fn merge(state: &State, projects: &mut [Project]) { let d=state.data.lock().unwrap(); for p in projects { if let Some(port)=d.config["portOverrides"][&p.path].as_u64().and_then(|n| u16::try_from(n).ok()) { p.port=Some(port); p.port_overridden=true; } if let Some(r)=d.running.get(&p.path) { p.status=r.status.clone(); p.started_at=Some(r.started_at); p.ports=r.ports.clone(); } } }
 fn create(app: &tauri::AppHandle, state: &Arc<State>, arg: &Value) -> Result<Value,String> {
     let name=arg["name"].as_str().unwrap_or("").trim(); let folder=arg["folder"].as_str().unwrap_or("");
     if name.is_empty() || name.chars().count()>60 || name.ends_with(['.', ' ']) || name.chars().any(|c| c.is_control() || "<>:\"/\\|?*".contains(c)) || ["CON","PRN","AUX","NUL","COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9","LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9"].contains(&name.to_uppercase().as_str()) { return Err("Invalid project name.".into()); }
@@ -110,11 +155,11 @@ fn create(app: &tauri::AppHandle, state: &Arc<State>, arg: &Value) -> Result<Val
     let pkg_name=regex::Regex::new("[^a-z0-9]+").unwrap().replace_all(&name.to_lowercase(), "-").trim_matches('-').to_string();
     fs::create_dir_all(path.join("src")).map_err(|e| e.to_string())?;
     fs::write(path.join("package.json"),serde_json::to_string_pretty(&json!({"name":pkg_name,"version":"0.1.0","private":true,"description":"","scripts":{"dev":"bun run --watch src/index.ts"},"devDependencies":{"@types/bun":"latest"}})).unwrap()).map_err(|e| e.to_string())?;
-    fs::write(path.join("src/index.ts"),format!("const NAME = {};\nlet server;\nfor (let port = 3000; port <= 3600; port++) {{\n  try {{ server = Bun.serve({{ port, fetch: () => new Response(`Hello from ${{NAME}}!`) }}); break; }} catch {{}}\n}}\nif (!server) throw new Error('No free port between 3000 and 3600');\nconsole.log(`🟤 ${{NAME}} running → http://localhost:${{server.port}}`);\n",serde_json::to_string(&pkg_name).unwrap())).map_err(|e| e.to_string())?;
+    fs::write(path.join("src/index.ts"),format!("const NAME = {};\nlet server;\nfor (let port = {port}; port <= 3600; port++) {{\n  try {{ server = Bun.serve({{ port, fetch: () => new Response(`Hello from ${{NAME}}!`) }}); break; }} catch {{}}\n}}\nif (!server) throw new Error('No free port between 3000 and 3600');\nconsole.log(`🟤 ${{NAME}} running → http://localhost:${{server.port}}`);\n",serde_json::to_string(&pkg_name).unwrap())).map_err(|e| e.to_string())?;
     fs::write(path.join(".gitignore"),"node_modules\ndist\n.env\n").map_err(|e| e.to_string())?;
     let p=path.to_string_lossy().into_owned(); { let mut d=state.data.lock().unwrap(); if !d.config["portOverrides"].is_object() { d.config["portOverrides"]=json!({}); } d.config["portOverrides"][&p]=json!(port); save_config(&state.dir,&d.config)?; }
     let _=output({let mut c=Command::new(bun(&config)); c.arg("install").current_dir(&path); c});
-    let result=start(app,state,&p,&Value::Null); if result["ok"] != true { return Err(result["message"].as_str().unwrap_or("Failed to start project").to_string()); }
+    let result=start(app,state,&p,&Value::Null); if result["ok"] != true { return Err(result["message"].as_str().unwrap_or("The chosen port became occupied; the project was created but not started. Rescan and start it manually.").to_string()); }
     Ok(json!({"ok":true,"path":p,"port":port,"folder":folder,"name":name}))
 }
 fn dispatch(app: &tauri::AppHandle, state: &Arc<State>, action: &str, arg: Value) -> Result<Value,String> {
@@ -131,11 +176,11 @@ fn dispatch(app: &tauri::AppHandle, state: &Arc<State>, action: &str, arg: Value
         "getConfig" => Ok(state.data.lock().unwrap().config.clone()),
         "reloadConfig" => { let cfg=load_config(&state.dir); state.data.lock().unwrap().config=cfg.clone(); Ok(cfg) },
         "updateConfig" => { let mut d=state.data.lock().unwrap(); if let Some(map)=arg.as_object() { d.config.as_object_mut().unwrap().extend(map.clone()); } save_config(&state.dir,&d.config)?; Ok(d.config.clone()) },
-        "getRunning" => { let d=state.data.lock().unwrap(); Ok(Value::Array(d.running.iter().map(|(p,r)| json!({"path":p,"name":r.project.name,"port":r.project.port,"script":r.project.script,"status":"running","startedAt":r.started_at})).collect())) },
+        "getRunning" => { let d=state.data.lock().unwrap(); Ok(Value::Array(d.running.iter().map(|(p,r)| json!({"path":p,"name":r.project.name,"port":r.project.port,"script":r.project.script,"status":r.status,"ports":r.ports,"startedAt":r.started_at})).collect())) },
         "getLog" => Ok(json!(state.data.lock().unwrap().logs.get(arg.as_str().unwrap_or("")).cloned().unwrap_or_default())),
         "clearLog" => { let mut d=state.data.lock().unwrap(); let path=arg.as_str().unwrap_or(""); d.logs.remove(path); d.log_order.retain(|p| p != path); Ok(json!({"ok":true})) },
         "portStatus" => { let port=arg.as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n>0).ok_or("Invalid port")?; let users=port_users(port)?; Ok(json!({"inUse":!users.is_empty(),"users":users})) },
-        "killPort" => { let port=arg["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n>0).ok_or("Invalid port")?; let users=port_users(port)?; if users.is_empty() { return Ok(json!({"ok":true,"port":port,"users":[],"output":""})); } if !approved_users(&users,&arg["approvedPids"]) { return Ok(json!({"ok":false,"conflict":true,"port":port,"users":users})); } let cfg=state.data.lock().unwrap().config.clone(); Ok(match kill_port(&cfg,port) { Ok(text)=>json!({"ok":true,"port":port,"users":users,"output":text}), Err(e)=>json!({"ok":false,"message":e}) }) },
+        "killPort" => { let port=arg["port"].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| *n>0).ok_or("Invalid port")?; let users=port_users(port)?; if users.is_empty() { return Ok(json!({"ok":true,"port":port,"users":[],"output":""})); } if !approved_users(&users,&arg["approvedPids"]) { return Ok(json!({"ok":false,"conflict":true,"port":port,"users":users})); } let cfg=state.data.lock().unwrap().config.clone(); Ok(match kill_port(&cfg,port,&users) { Ok(text)=>json!({"ok":true,"port":port,"users":users,"output":text}), Err(e)=>json!({"ok":false,"message":e}) }) },
         "openConfig" | "openProjectFolder" => { let path=if action=="openConfig" { state.dir.to_string_lossy().into_owned() } else { arg.as_str().unwrap_or("").into() }; Command::new("explorer.exe").arg(path).spawn().map_err(|e| e.to_string())?; Ok(Value::Null) },
         "openUrl" => { let url=arg.as_str().unwrap_or(""); if !(url.starts_with("http://") || url.starts_with("https://")) { return Err("Invalid URL".into()); } Command::new("rundll32.exe").args(["url.dll,FileProtocolHandler",url]).spawn().map_err(|e| e.to_string())?; Ok(Value::Null) },
         "copyText" => { let mut child=Command::new("clip").stdin(Stdio::piped()).spawn().map_err(|e| e.to_string())?; child.stdin.take().unwrap().write_all(arg.as_str().unwrap_or("").as_bytes()).map_err(|e| e.to_string())?; child.wait().map_err(|e| e.to_string())?; Ok(Value::Null) },
@@ -150,6 +195,18 @@ async fn bridge(app: tauri::AppHandle, action: String, arg: Option<Value>) -> Re
 mod port_tests {
     use super::*;
     #[test]
+    fn detects_only_ports_owned_by_project_process_tree() {
+        let lines = "TCP 127.0.0.1:3001 0.0.0.0:0 LISTENING 41\nTCP [::1]:3001 [::]:0 LISTENING 41\nTCP 0.0.0.0:9999 0.0.0.0:0 LISTENING 22\nTCP 127.0.0.1:4000 0.0.0.0:0 ESTABLISHED 41";
+        assert_eq!(listening_ports(lines, &HashSet::from([41])), vec![3001]);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn detects_a_live_listener_owned_by_current_process() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(process_ports(std::process::id()).unwrap().contains(&port));
+    }
+    #[test]
     fn approval_matches_exact_current_listener_set() {
         let users = vec![json!({"pid":"41","name":"bun.exe"}), json!({"pid":"52","name":"node.exe"})];
         assert!(!approved_users(&users, &Value::Null));
@@ -159,7 +216,9 @@ mod port_tests {
     }
 }
 fn main() {
-    let dir=std::env::current_dir().expect("current directory"); let config=load_config(&dir);
+    let cwd=std::env::current_dir().expect("current directory");
+    let dir=if cwd.join("config.json").exists() { cwd } else { std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or(cwd) };
+    let config=load_config(&dir);
     let state=Arc::new(State { dir, data:Mutex::new(Data { config, running:HashMap::new(), logs:HashMap::new(), log_order:VecDeque::new() }) });
     tauri::Builder::default().manage(state).invoke_handler(tauri::generate_handler![bridge]).build(tauri::generate_context!()).expect("failed to create app").run(|app,event| { if matches!(event,tauri::RunEvent::Exit) { let state=app.state::<Arc<State>>(); let paths: Vec<_>=state.data.lock().unwrap().running.keys().cloned().collect(); for p in paths { stop(app,&state,&p); } } });
 }

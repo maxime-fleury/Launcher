@@ -99,6 +99,24 @@
     </div>
   </div>
 
+  <div id="config-overlay" class="overlay hidden">
+    <form id="config-form" class="modal config-modal" aria-labelledby="config-title">
+      <h2 id="config-title" class="modal-title">Settings</h2>
+      <label class="fld-label" for="config-roots">Scan roots · one path per line</label>
+      <textarea id="config-roots" rows="3"></textarea>
+      <label class="fld-label" for="config-bun">Bun executable · bun for PATH</label>
+      <input id="config-bun" type="text" />
+      <label class="fld-label" for="config-kpport">Port tool · blank uses bundled tool</label>
+      <input id="config-kpport" type="text" />
+      <label class="fld-label" for="config-folders">New project folders · one per line</label>
+      <textarea id="config-folders" rows="2"></textarea>
+      <label class="fld-label" for="config-overrides">Port overrides · JSON path → port</label>
+      <textarea id="config-overrides" rows="5" spellcheck="false"></textarea>
+      <p id="config-error" class="newproj-error hidden"></p>
+      <div class="modal-actions"><button id="config-cancel" type="button" class="btn ghost">Cancel</button><button type="submit" class="btn">Save &amp; rescan</button></div>
+    </form>
+  </div>
+
   <div id="port-conflict-overlay" class="overlay hidden">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="port-conflict-title">
       <h2 id="port-conflict-title" class="modal-title">Port already in use</h2>

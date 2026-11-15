@@ -13,10 +13,12 @@ I had built so many apps that I needed a launcher to keep track of them. Rather 
 
 ## Run
 
-Install the Rust MSVC toolchain and Microsoft Edge WebView2 Runtime, then build once from this folder:
+Download the Windows ZIP from GitHub Releases, extract it to a writable folder, and run `rust-launcher.exe`. The ZIP includes the launcher, the scan CLI, and a bundled `kpport.exe` implementation. Bun must be installed separately and available on PATH (or configured in Settings); Microsoft Edge WebView2 Runtime is also required.
+
+To build from source, install the Rust MSVC toolchain and Microsoft Edge WebView2 Runtime, then run:
 
 ```bash
-cargo build --release --bin rust-launcher
+cargo build --release --bins
 ```
 
 After building, open it using:
@@ -71,10 +73,10 @@ together with `bun.lock` / `bun.lockb` (or `packageManager: "bun@…"`).
 - **＋ New Project** — opens a dialog: type a name, pick a folder (**AI / Dev / gen**), and hit **Create & Start**.
   It creates `<root>\<folder>\<name>` with a minimal bun project (`package.json` + `src/index.ts`),
   installs `@types/bun`, picks the **first free port from 3000 to 3600**, and starts it right away.
-  The generated server itself prefers 3000 and walks up to 3600 at runtime if that port is taken.
+  The generated server prefers the selected free port and walks up to 3600 at runtime if that port is taken.
   The chosen port is saved as a `portOverride` so the launcher always starts/opens the right one.
 - **⟳ Rescan**, **■ Stop all**, sort dropdown (running first / my order / name / port), and search by name/path/port.
-- Running projects show a green **RUNNING** badge, live **uptime**, and their detected port.
+- **PROCESS RUNNING** means the process started; **READY** means at least one listening TCP port was found in its process tree. Listening ports are displayed separately from estimated ports.
 - Framework badges (vite / hono / express / next / react / svelte / …) are detected from dependencies.
 - Toast notifications confirm starts, stops, restarts, failures, and list changes.
 
@@ -89,7 +91,7 @@ toast, removed ones disappear. A manual **⟳ Rescan** always does a fresh scan.
 | Key | Meaning |
 |---|---|
 | `scanRoots` | Folders scanned recursively (default `["D:\\"]`). |
-| `kpportPath` | Path to `kpport.cmd` (default `C:\tools\kpport.cmd`). |
+| `kpportPath` | Optional path to your own `kpport.cmd`; leave blank to use the bundled `kpport.exe`. |
 | `bunPath` | Fallback bun executable if `bun` isn't on PATH. |
 | `ignoredDirs` | Directory names never entered (node_modules, .git, venv, …). |
 | `createFolders` | Folder names offered by **＋ New Project** (default `["AI", "Dev", "gen"]`), created under the first scan root. |
@@ -105,7 +107,9 @@ toast, removed ones disappear. A manual **⟳ Rescan** always does a fresh scan.
 
 ## Port detection
 
-The port is detected automatically, in layers:
+For running projects, the launcher checks listening TCP ports owned by the Bun process and its descendants. Multiple ports are shown separately; a process can be running without a listening port. Ports shown before launch are estimates and may differ from runtime.
+
+Estimated ports are detected automatically, in layers:
 
 1. **Scripts** — `--port 3000`, `PORT=3000`, `-p 3000`, `localhost:3000`, …
 2. **Source files** — `Bun.serve({ port: 3001 })`, `process.env.PORT || 3000`,

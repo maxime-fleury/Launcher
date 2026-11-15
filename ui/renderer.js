@@ -25,6 +25,9 @@ const state = {
   newProj: { folder: null }, // New Project dialog state
 };
 
+const isActive = (p) => p.status === "running" || p.status === "ready" || p.status === "starting";
+const shownPort = (p) => p.ports?.length === 1 ? p.ports[0] : (!isActive(p) ? p.port : null);
+
 const rowEls = new Map(); // path -> { root, nameRow, dotEl, startBtn, restartBtn, uptimeEl, statusEl }
 
 const $ = (id) => document.getElementById(id);
@@ -118,13 +121,13 @@ function visibleProjects() {
   const q = state.filter.trim().toLowerCase();
   const list = [...state.projects.values()];
   const filtered = list.filter((p) => {
-    const matchesText = !q || displayName(p.path).toLowerCase().includes(q) || p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q) || (p.framework || "").toLowerCase().includes(q) || (p.port && String(p.port).includes(q)) || p.script.toLowerCase().includes(q);
-    const matchesQuick = state.quickFilter === "all" || (state.quickFilter === "running" && (p.status === "running" || p.status === "starting")) || (state.quickFilter === "favorites" && state.favorites.has(p.path));
+    const matchesText = !q || displayName(p.path).toLowerCase().includes(q) || p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q) || (p.framework || "").toLowerCase().includes(q) || ((p.ports || []).some((port) => String(port).includes(q)) || (p.port && String(p.port).includes(q))) || p.script.toLowerCase().includes(q);
+    const matchesQuick = state.quickFilter === "all" || (state.quickFilter === "running" && isActive(p)) || (state.quickFilter === "favorites" && state.favorites.has(p.path));
     return matchesText && matchesQuick && (!state.folderFilter || projectFolder(p.path) === state.folderFilter);
   });
-  const rank = (p) => (p.status === "running" ? 0 : p.status === "starting" ? 1 : p.status === "error" ? 2 : 3);
+  const rank = (p) => (p.status === "ready" || p.status === "running" ? 0 : p.status === "starting" ? 1 : p.status === "error" ? 2 : 3);
   const byName = (a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase());
-  const byPort = (a, b) => (a.port ?? 1e9) - (b.port ?? 1e9) || byName(a, b);
+  const byPort = (a, b) => (shownPort(a) ?? a.ports?.[0] ?? 1e9) - (shownPort(b) ?? b.ports?.[0] ?? 1e9) || byName(a, b);
   if (state.sort === "custom") {
     const idx = new Map(state.customOrder.map((p, i) => [p, i]));
     return [...filtered].sort((a, b) => {
@@ -182,11 +185,12 @@ function render() {
     if (isNew) li.style.animationDelay = `${Math.min(i * 30, 400)}ms`;
     state.seenPaths.add(p.path);
 
-    const isRunning = p.status === "running";
+    const isRunning = p.status === "running" || p.status === "ready";
+    const port = shownPort(p);
     const isStarting = p.status === "starting";
 
     const dot = document.createElement("span");
-    dot.className = "dot " + (isRunning ? "running" : isStarting ? "starting" : p.status === "error" ? "error" : "");
+    dot.className = "dot " + (p.status === "ready" ? "running" : isRunning ? "starting" : isStarting ? "starting" : p.status === "error" ? "error" : "");
 
     const info = document.createElement("div");
     info.className = "info";
@@ -230,8 +234,8 @@ function render() {
     nameRow.appendChild(renBtn);
 
     const statusLabel = document.createElement("span");
-    statusLabel.className = "statuslabel " + (isRunning ? "run" : isStarting ? "start" : p.status === "error" ? "err" : "off");
-    statusLabel.textContent = isRunning ? "RUNNING" : isStarting ? "STARTING…" : p.status === "error" ? "ERROR" : "";
+    statusLabel.className = "statuslabel " + (p.status === "ready" ? "run" : isRunning || isStarting ? "start" : p.status === "error" ? "err" : "off");
+    statusLabel.textContent = p.status === "ready" ? "READY" : isRunning ? "PROCESS RUNNING" : isStarting ? "STARTING…" : p.status === "error" ? "ERROR" : "";
     if (statusLabel.textContent) nameRow.appendChild(statusLabel);
 
     if (isRunning) {
@@ -253,17 +257,16 @@ function render() {
 
     if (p.framework) badges.appendChild(makeBadge("fw fw-" + p.framework, p.framework));
 
-    if (p.port) {
-      const portBadge = makeBadge("port", `🔗 :${p.port}`, isRunning ? "Open http://localhost:" + p.port : "Detected port — click to open");
-      portBadge.addEventListener("click", (e) => {
-        e.stopPropagation();
-        bridge.openUrl("http://localhost:" + p.port);
-      });
+    if (port) {
+      const portBadge = makeBadge("port", `🔗 :${port}`, isRunning ? "Listening port — click to open" : "Estimated port — click to open");
+      portBadge.addEventListener("click", (e) => { e.stopPropagation(); bridge.openUrl("http://localhost:" + port); });
       if (isRunning) portBadge.classList.add("live");
-      if (p.portOverridden) badges.appendChild(makeBadge("override", "override", "Port set in config.json portOverrides"));
+      else badges.appendChild(makeBadge("override", "estimated", "The actual port is checked after starting"));
       badges.appendChild(portBadge);
+    } else if (p.ports?.length > 1) {
+      for (const n of p.ports) { const badge = makeBadge("port", `🔗 :${n}`, "Listening port — click to open"); badge.classList.add("live"); badge.addEventListener("click", (e) => { e.stopPropagation(); bridge.openUrl("http://localhost:" + n); }); badges.appendChild(badge); }
     } else {
-      badges.appendChild(makeBadge("noport", "no port", "Add a portOverride in config.json to auto-kill the port"));
+      badges.appendChild(makeBadge("noport", isRunning ? "no listening port detected" : "no port", "Ports are checked after starting"));
     }
 
     badges.appendChild(makeBadge("script", "bun run " + p.script));
@@ -281,7 +284,7 @@ function render() {
       det.className = "details";
       det.innerHTML = `
         <div class="det-row"><span class="k">folder</span><span class="det-path">${esc(p.path)}</span><button class="copybtn" data-path="${esc(p.path)}" title="Copy path">⧉</button></div>
-        <div class="det-row"><span class="k">script</span> bun run ${esc(p.script)}${p.port ? ` · port <b>${p.port}</b>` : " · <i>no port detected</i>"}${p.portOverridden ? " (override)" : ""}</div>
+        <div class="det-row"><span class="k">script</span> bun run ${esc(p.script)}${p.port ? ` · estimated port <b>${p.port}</b>` : " · <i>no estimated port</i>"}${p.portOverridden ? " (override)" : ""}${p.ports?.length ? ` · listening: ${p.ports.join(", ")}` : ""}</div>
         ${p.port ? `<div class="det-row"><span class="k">port status</span><span class="portline" data-port="${p.port}">checking…</span></div>` : ""}
         ${p.framework ? `<div class="det-row"><span class="k">framework</span> ${esc(p.framework)}</div>` : ""}
         ${p.description ? `<div class="det-row"><span class="k">about</span> ${esc(p.description)}</div>` : ""}
@@ -412,7 +415,7 @@ function patchRow(path) {
   const els = rowEls.get(path);
   if (!p || !els) return;
 
-  const isRunning = p.status === "running";
+  const isRunning = p.status === "running" || p.status === "ready";
   const isStarting = p.status === "starting";
   const isError = p.status === "error";
 
@@ -432,7 +435,7 @@ function patchRow(path) {
     els.nameRow.appendChild(label);
     els.statusEl = label;
   }
-  label.textContent = isRunning ? "RUNNING" : isStarting ? "STARTING…" : isError ? "ERROR" : "";
+  label.textContent = p.status === "ready" ? "READY" : isRunning ? "PROCESS RUNNING" : isStarting ? "STARTING…" : isError ? "ERROR" : "";
   label.className = "statuslabel " + (isRunning ? "run" : isStarting ? "start" : isError ? "err" : "");
 
   const portBadge = els.root.querySelector(".badge.port");
@@ -523,7 +526,7 @@ async function resolvePortConflict(result, retry) {
 async function toggle(projectPath) {
   const p = state.projects.get(projectPath);
   if (!p) return;
-  if (p.status === "running" || p.status === "starting") {
+  if (isActive(p)) {
     await bridge.stopProject(projectPath);
   } else {
     openTab(projectPath);
@@ -604,7 +607,7 @@ function reorderProject(fromPath, toPath) {
 setInterval(() => {
   for (const [path, els] of rowEls) {
     const p = state.projects.get(path);
-    if (p && p.status === "running" && els.uptimeEl && p.startedAt) {
+    if (p && (p.status === "running" || p.status === "ready") && els.uptimeEl && p.startedAt) {
       els.uptimeEl.textContent = "· " + fmtDuration(Date.now() - p.startedAt);
     }
   }
@@ -658,7 +661,7 @@ function closeTab(projectPath) {
 
 function tabStatusClass(path) {
   const p = state.projects.get(path);
-  if (p?.status === "running") return "run";
+  if (p?.status === "running" || p?.status === "ready") return "run";
   if (p?.status === "starting") return "start";
   if (p?.status === "error") return "err";
   return "";
@@ -823,7 +826,37 @@ function rescan() {
 
 $("btn-rescan").addEventListener("click", rescan);
 
-$("btn-config").addEventListener("click", () => bridge.openConfig());
+$("btn-config").addEventListener("click", async () => {
+  try {
+    const cfg = await bridge.getConfig();
+    $("config-roots").value = (cfg.scanRoots || []).join("\n");
+    $("config-bun").value = cfg.bunPath || "bun";
+    $("config-kpport").value = cfg.kpportPath || "";
+    $("config-folders").value = (cfg.createFolders || []).join("\n");
+    $("config-overrides").value = JSON.stringify(cfg.portOverrides || {}, null, 2);
+    $("config-error").classList.add("hidden");
+    $("config-overlay").classList.remove("hidden");
+    $("config-roots").focus();
+  } catch (error) { toast(`Could not load settings: ${esc(error)}`, "error"); }
+});
+$("config-cancel").addEventListener("click", () => $("config-overlay").classList.add("hidden"));
+$("config-overlay").addEventListener("click", (event) => { if (event.target === event.currentTarget) $("config-overlay").classList.add("hidden"); });
+$("config-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const errorEl = $("config-error");
+  try {
+    const lines = (id) => $(id).value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const scanRoots = lines("config-roots");
+    const createFolders = lines("config-folders");
+    const portOverrides = JSON.parse($("config-overrides").value || "{}");
+    if (!scanRoots.length) throw new Error("Enter at least one scan root.");
+    if (!portOverrides || Array.isArray(portOverrides) || typeof portOverrides !== "object" || Object.values(portOverrides).some((p) => !Number.isInteger(p) || p < 1 || p > 65535)) throw new Error("Port overrides must be an object with ports from 1 to 65535.");
+    const cfg = await bridge.updateConfig({ scanRoots, createFolders, portOverrides, bunPath: $("config-bun").value.trim() || "bun", kpportPath: $("config-kpport").value.trim() });
+    state.scanRoots = cfg.scanRoots; state.createFolders = cfg.createFolders;
+    $("config-overlay").classList.add("hidden"); rescan();
+    toast("Settings saved", "success");
+  } catch (error) { errorEl.textContent = String(error); errorEl.classList.remove("hidden"); }
+});
 
 // ---------- new project dialog ----------
 function openNewProjectDialog() {
@@ -990,7 +1023,7 @@ function populateProjects(projects) {
   const prev = new Set(state.projects.keys());
   state.projects.clear();
   for (const p of projects) state.projects.set(p.path, p);
-  state.runningCount = [...state.projects.values()].filter((x) => x.status === "running" || x.status === "starting").length;
+  state.runningCount = [...state.projects.values()].filter((x) => isActive(x)).length;
   updateRunningUi();
   return prev;
 }
@@ -1043,27 +1076,31 @@ bridge.onScanDone(({ projects, roots }) => {
 });
 
 // ---------- process events ----------
-bridge.onProjectStatus(({ path, status, port, startedAt }) => {
+bridge.onProjectStatus(({ path, status, port, ports, startedAt }) => {
   const p = state.projects.get(path);
   if (!p) return;
   p.status = status;
   if (port != null) p.port = port;
+  if (ports != null) p.ports = ports;
+  else if (status === "stopped" || status === "error" || status === "starting") p.ports = [];
   if (startedAt) p.startedAt = startedAt;
 
-  state.runningCount = [...state.projects.values()].filter((x) => x.status === "running" || x.status === "starting").length;
+  state.runningCount = [...state.projects.values()].filter((x) => isActive(x)).length;
   updateRunningUi();
-  if (state.quickFilter === "running") render(); else patchRow(path);
+  render();
 
   if (state.tabs.has(path)) renderTabs();
-  if (state.expanded.size && (status === "running" || status === "stopped" || status === "error")) fillPortStatuses();
+  if (state.expanded.size && (status === "running" || status === "ready" || status === "stopped" || status === "error")) fillPortStatuses();
   if (state.expanded.size && status === "running") {
     // the server binds shortly after the process spawns — re-check a couple of times
     setTimeout(fillPortStatuses, 800);
     setTimeout(fillPortStatuses, 2600);
   }
 
-  if (status === "running") {
-    toast(`<b>${esc(displayName(path))}</b> running${p.port ? ` on port ${p.port}` : ""}`, "success");
+  if (status === "ready") {
+    toast(`<b>${esc(displayName(path))}</b> listening on ${p.ports.map((n) => `:${n}`).join(", ")}`, "success");
+  } else if (status === "running") {
+    toast(`<b>${esc(displayName(path))}</b> process started`, "info");
   } else if (status === "error") {
     toast(`<b>${esc(displayName(path))}</b> failed to start`, "error");
   } else if (status === "stopped") {

@@ -17,6 +17,7 @@ pub struct Project {
     #[serde(default)] pub port_overridden: bool,
     #[serde(default = "stopped")] pub status: String,
     #[serde(default)] pub started_at: Option<u128>,
+    #[serde(default)] pub ports: Vec<u16>,
 }
 fn stopped() -> String { "stopped".into() }
 const SCRIPTS: &[&str] = &["dev", "start", "serve", "preview", "run", "start:dev", "dev:start", "build"];
@@ -101,7 +102,7 @@ pub fn describe(dir: &Path) -> Option<Project> {
         r"(?i)(?:^|[\s&|;])--?(?:port|server\.port)\s*(?:[=:]|\s)\s*(\d{1,5})",
         r"(?i)(?:^|[\s&|;])-p\s+(\d{1,5})\b", r"(?i)(?:^|[\s;])PORT\s*=\s*(\d{1,5})", r"(?i)(?:localhost|127\.0\.0\.1|0\.0\.0\.0)[:/](\d{1,5})\b", r"(?i)listen\s*\(\s*(\d{1,5})",
     ])).or_else(|| source_port(dir, scripts, framework.as_deref()));
-    Some(Project { path: dir.to_string_lossy().into_owned(), name: pkg.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or_else(|| dir.file_name().and_then(|s| s.to_str()).unwrap_or("")).into(), script: SCRIPTS.iter().find(|n| scripts.get(**n).and_then(Value::as_str).is_some()).unwrap_or(&"dev").to_string(), port, description: pkg.get("description").and_then(Value::as_str).unwrap_or("").into(), framework, favicon_url: favicon(dir), port_overridden: false, status: stopped(), started_at: None })
+    Some(Project { path: dir.to_string_lossy().into_owned(), name: pkg.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or_else(|| dir.file_name().and_then(|s| s.to_str()).unwrap_or("")).into(), script: SCRIPTS.iter().find(|n| scripts.get(**n).and_then(Value::as_str).is_some()).unwrap_or(&"dev").to_string(), port, description: pkg.get("description").and_then(Value::as_str).unwrap_or("").into(), framework, favicon_url: favicon(dir), port_overridden: false, status: stopped(), started_at: None, ports: Vec::new() })
 }
 pub fn scan<F: FnMut(usize, usize, &str)>(roots: &[String], ignored: &[String], mut progress: F) -> Vec<Project> {
     let ignored: HashSet<String> = ignored.iter().map(|s| s.to_lowercase()).collect();
