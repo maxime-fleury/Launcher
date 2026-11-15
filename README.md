@@ -3,6 +3,14 @@
 Windows desktop app (Rust + Tauri, using the system WebView2) that scans your drives for **bun projects** and starts them with one click.
 Before starting a project, it checks the configured port and asks for confirmation before running `kpport` on an occupied port.
 
+## Why I built it
+
+I had built so many apps that I needed a launcher to keep track of them. Rather than opening a terminal for every project and remembering its folder and port, I wanted one place to discover, start, stop and monitor my local apps.
+
+## Screenshot
+
+![Bun Launcher showing local projects, running status, start and stop controls, and integrated terminal logs](docs/images/bun-launcher.png)
+
 ## Run
 
 Install the Rust MSVC toolchain and Microsoft Edge WebView2 Runtime, then build once from this folder:
